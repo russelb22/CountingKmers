@@ -1,100 +1,32 @@
-// ========== host.cu ==========
-#include <cstdio>
-#include <cstring>
-#include <cuda_runtime.h>
-#include <thrust/device_vector.h>
-#include <thrust/sort.h>
-#include <thrust/unique.h>
+void initialize_lookup_d()
+{
+    // 1) Prepare host‐side decode lookup and copy it
+    const char decode_lookup_h[4] = { 'A', 'C', 'G', 'T' };
+    cudaMemcpyToSymbol(decode_lookup_d,
+                       decode_lookup_h,
+                       sizeof(decode_lookup_h));
 
-// forward‐declared kernels (implement below)
-__global__ void encode_kmers_kernel(const char* seq,
-                                    size_t    seq_len,
-                                    int       k,
-                                    uint64_t* encoded);
-__global__ void build_edges_kernel(const uint64_t* encoded,
-                                   size_t           num_kmers,
-                                   int              k,
-                                   uint64_t*        prefixes,
-                                   uint64_t*        suffixes);
 
-char* read_fasta(const char* fname) {
-    FILE* f = fopen(fname, "r");
-    if (!f) return nullptr;
-
-    // Skip header lines and count sequence length
-    int cap = 0, len = 0;
-    char* buf = nullptr;
-    char line[4096];
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '>') continue;
-        int l = strlen(line);
-        // strip newline
-        if (line[l-1] == '\n') line[--l] = '\0';
-        if (len + l + 1 > cap) {
-            cap = (len + l + 1) * 2;
-            buf = (char*)realloc(buf, cap);
-        }
-        memcpy(buf + len, line, l);
-        len += l;
-    }
-    if (buf) buf[len] = '\0';
-    fclose(f);
-    return buf;
+   // 2) Copy the entire table into device constant memory
+    cudaMemcpyToSymbol(encode_lookup_d,
+                       lookup,
+                       sizeof(lookup));
 }
 
-int main()
+__global__
+void encode_kmers_kernel(const char* seq,
+                         size_t    seq_len,
+                         int       k,
+                         uint64_t* encoded)
 {
-    // 1) Host sequence
-    char* sequence = read_fasta("GCA_900098775.1_35KB.fasta");
-    size_t seq_len = strlen(sequence);
-    int    k       = 31;
-    size_t num_kmers = seq_len >= k ? seq_len - k + 1 : 0;
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx + k > seq_len) return;
 
-    // 2) Copy sequence to device
-    char*   d_seq;
-    cudaMalloc(&d_seq, seq_len + 1);
-    cudaMemcpy(d_seq, sequence, seq_len + 1, cudaMemcpyHostToDevice);
-
-    // 3) Allocate device buffers for encoded k‐mers and edge lists
-    uint64_t *d_encoded, *d_prefixes, *d_suffixes;
-    cudaMalloc(&d_encoded,  num_kmers * sizeof(uint64_t));
-    cudaMalloc(&d_prefixes, num_kmers * sizeof(uint64_t));
-    cudaMalloc(&d_suffixes, num_kmers * sizeof(uint64_t));
-
-    // 4) Launch encode_kmers_kernel
-    int threads = 256;
-    int blocks  = (num_kmers + threads - 1) / threads;
-    encode_kmers_kernel<<<blocks,threads>>>(d_seq, seq_len, k, d_encoded);
-    cudaDeviceSynchronize();
-
-    // 5) Launch build_edges_kernel (prefix / suffix extraction)
-    build_edges_kernel<<<blocks,threads>>>(d_encoded, num_kmers, k,
-                                           d_prefixes, d_suffixes);
-    cudaDeviceSynchronize();
-
-    // 6) Use Thrust to build unique node set: concatenate prefixes & suffixes
-    thrust::device_vector<uint64_t> nodes(2 * num_kmers);
-    cudaMemcpy(thrust::raw_pointer_cast(nodes.data()),
-               d_prefixes,
-               num_kmers * sizeof(uint64_t),
-               cudaMemcpyDeviceToDevice);
-    cudaMemcpy(thrust::raw_pointer_cast(nodes.data()) + num_kmers,
-               d_suffixes,
-               num_kmers * sizeof(uint64_t),
-               cudaMemcpyDeviceToDevice);
-
-    thrust::sort(nodes.begin(), nodes.end());
-    auto new_end = thrust::unique(nodes.begin(), nodes.end());
-    size_t num_nodes = new_end - nodes.begin();
-    printf("Found %zu unique (k-1)-mers\n", num_nodes);
-
-    // …next steps: map prefixes/suffixes → node indices, build CSR, compact unitigs…
-
-    // cleanup
-    cudaFree(d_seq);
-    cudaFree(d_encoded);
-    cudaFree(d_prefixes);
-    cudaFree(d_suffixes);
-    free(sequence);
-    return 0;
+    uint64_t val = 0;
+    // pack k bases at 2 bits each
+    for (int i = 0; i < k; ++i) {
+        uint8_t code = encode_lookup_d[(uint8_t)seq[idx + i]];
+        val = (val << 2) | code;
+    }
+    encoded[idx] = val;
 }
