@@ -3,6 +3,25 @@
 #include <cstdint>
 
 // extern __constant__ uint8_t encode_lookup_d[256];  // make sure this is initialized
+static uint8_t lookup[85] = { 0 };
+
+__constant__ uint8_t encode_lookup_d[256];
+__constant__ char    decode_lookup_d[4];
+
+void initialize_lookup_d()
+{
+    // 1) Prepare host‐side decode lookup and copy it
+    const char decode_lookup_h[4] = { 'A', 'C', 'G', 'T' };
+    cudaMemcpyToSymbol(decode_lookup_d,
+                       decode_lookup_h,
+                       sizeof(decode_lookup_h));
+
+
+   // 2) Copy the entire table into device constant memory
+    cudaMemcpyToSymbol(encode_lookup_d,
+                       lookup,
+                       sizeof(lookup));
+}
 
 __global__
 void encode_kmers_kernel(const char* seq,
