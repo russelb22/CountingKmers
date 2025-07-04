@@ -1,4 +1,4 @@
-// ========== host.cpp ==========
+// ========== host.cu ==========
 #include <cstdio>
 #include <cstring>
 #include <cuda_runtime.h>
@@ -17,7 +17,33 @@ __global__ void build_edges_kernel(const uint64_t* encoded,
                                    uint64_t*        prefixes,
                                    uint64_t*        suffixes);
 
-int main() {
+char* read_fasta(const char* fname) {
+    FILE* f = fopen(fname, "r");
+    if (!f) return nullptr;
+
+    // Skip header lines and count sequence length
+    int cap = 0, len = 0;
+    char* buf = nullptr;
+    char line[4096];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '>') continue;
+        int l = strlen(line);
+        // strip newline
+        if (line[l-1] == '\n') line[--l] = '\0';
+        if (len + l + 1 > cap) {
+            cap = (len + l + 1) * 2;
+            buf = (char*)realloc(buf, cap);
+        }
+        memcpy(buf + len, line, l);
+        len += l;
+    }
+    if (buf) buf[len] = '\0';
+    fclose(f);
+    return buf;
+}
+
+int main()
+{
     // 1) Host sequence
     char* sequence = read_fasta("GCA_900098775.1_35KB.fasta");
     size_t seq_len = strlen(sequence);
