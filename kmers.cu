@@ -84,3 +84,4 @@ int main() {
     initialize_lookup_d();
 
     return EXIT_SUCCESS;
+}
